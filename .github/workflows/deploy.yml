@@ -69,5 +69,71 @@ jobs:
           docker ps | grep test-container
           docker logs test-container
           docker stop test-container
-    
+
+  deploy:
+    needs: build-docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get Webserver public IP address by Tag
+        run: |
+          EC2_WEBSERVER=$(aws ec2 describe-instances \
+          --region ${{ secrets.AWS_REGION }} \
+          --filters "Name=tag:Name,Values=webserver" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+          echo "EC2_WEBSERVER=$EC2_WEBSERVER" >> $GITHUB_ENV
+
+      - name: Get DB-server IP address by Tag
+        run: |
+          EC2_DB_SERVER=$(aws ec2 describe-instances \
+          --region ${{ secrets.AWS_REGION }} \
+          --filters "Name=tag:Name,Values=db-server" "Name=instance-state-name,Values=running" \
+          --query "Reservations[0].Instances[0].PublicIpAddress" \
+          --output text)
+          echo "EC2_DB_SERVER=$EC2_DB_SERVER" >> $GITHUB_ENV
+          
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh 
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/my_aws_key.pem
+          chmod 600 ~/.ssh/my_aws_key.pem 
+          echo "StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "UserKnownHostsFile /dev/null" >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+     
+      - name: Deploy to webserver
+        run: |
+          ssh -T -i ~/.ssh/my_aws_key.pem -o "StrictHostKeyChecking=no" ${{ secrets.EC2_USER }}@$EC2_WEBSERVER << 'EOF'
+            docker pull ${{ env.IMAGE_NAME }}:latest
+            docker stop lamp-app || true
+            docker rm lamp-app || true
+            docker run -d --name lamp-app \
+            -p 5000:5000 \
+            --restart unless-stopped \
+            -e DB_HOST=$EC2_DB_SERVER \
+            -e DB_PORT=3306 \
+            -e DB_NAME=${{ secrets.DB_NAME }} \
+            -e DB_USER=${{ secrets.DB_USER }} \
+            -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \ 
+            -e FLASK_ENV=production \
+            ${{ env.IMAGE_NAME }}:latest
+          EOF
+
+      - name: Health check webserver
+        run: |
+          sleep 45
+          HOST=$(echo "$EC2_WEBSERVER" | tr -d '[:space:]')
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${HOST}/health)
+          if [ "$STATUS" != 200 ]; then
+            echo "Server 1 health check failed. Status: $STATUS"
+            exit 1
+          fi
+          echo "Server 1 is healthy. Status: $STATUS"
   
