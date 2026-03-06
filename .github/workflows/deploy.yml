@@ -80,16 +80,7 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Get Webserver public IP address by Tag
-        run: |
-          EC2_WEBSERVER=$(aws ec2 describe-instances \
-          --region ${{ secrets.AWS_REGION }} \
-          --filters "Name=tag:Name,Values=webserver" "Name=instance-state-name,Values=running" \
-          --query 'Reservations[0].Instances[0].PublicIpAddress' \
-          --output text)
-          echo "EC2_WEBSERVER=$EC2_WEBSERVER" >> $GITHUB_ENV
-
+          
       - name: Get DB-server IP address by Tag
         run: |
           EC2_DB_SERVER=$(aws ec2 describe-instances \
@@ -98,6 +89,15 @@ jobs:
           --query "Reservations[0].Instances[0].PublicIpAddress" \
           --output text)
           echo "EC2_DB_SERVER=$EC2_DB_SERVER" >> $GITHUB_ENV
+          
+      - name: Get Webserver public IP address by Tag
+        run: |
+          EC2_WEBSERVER=$(aws ec2 describe-instances \
+          --region ${{ secrets.AWS_REGION }} \
+          --filters "Name=tag:Name,Values=webserver" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+          echo "EC2_WEBSERVER=$EC2_WEBSERVER" >> $GITHUB_ENV
           
       - name: Set up SSH key
         run: |
