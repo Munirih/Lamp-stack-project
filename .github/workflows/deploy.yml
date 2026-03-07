@@ -81,12 +81,12 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
           
-      - name: Get DB-server public IP address by Tag
+      - name: Get DB-server private IP address by Tag
         run: |
           EC2_DB_SERVER=$(aws ec2 describe-instances \
           --region ${{ secrets.AWS_REGION }} \
           --filters "Name=tag:Name,Values=db-server" "Name=instance-state-name,Values=running" \
-          --query "Reservations[0].Instances[0].PublicIpAddress" \
+          --query "Reservations[0].Instances[0].PrivateIpAddress" \
           --output text)
           echo "EC2_DB_SERVER=$EC2_DB_SERVER" >> $GITHUB_ENV
           
@@ -95,7 +95,7 @@ jobs:
           EC2_WEBSERVER=$(aws ec2 describe-instances \
           --region ${{ secrets.AWS_REGION }} \
           --filters "Name=tag:Name,Values=webserver" "Name=instance-state-name,Values=running" \
-          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --query "Reservations[0].Instances[0].PublicIpAddress" \
           --output text)
           echo "EC2_WEBSERVER=$EC2_WEBSERVER" >> $GITHUB_ENV
           
@@ -110,7 +110,7 @@ jobs:
      
       - name: Deploy to webserver
         run: |
-          ssh -T -i ~/.ssh/my_aws_key.pem -o "StrictHostKeyChecking=no" ${{ vars.EC2_USER }}@$EC2_WEBSERVER << 'EOF'
+          ssh -T -i ~/.ssh/my_aws_key.pem -o "StrictHostKeyChecking=no" ${{ vars.EC2_USER }}@$EC2_WEBSERVER << EOF
             docker pull ${{ env.IMAGE_NAME }}:latest
             docker stop lamp-app || true
             docker rm lamp-app || true
@@ -119,7 +119,7 @@ jobs:
 
       - name: Health check webserver
         run: |
-          sleep 45
+          sleep 25
           HOST=$(echo "$EC2_WEBSERVER" | tr -d '[:space:]')
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${HOST}/health)
           if [ "$STATUS" != 200 ]; then
