@@ -104,7 +104,7 @@ def home():
                 <p class="value">{ip_address}</p>
             </div>
             <div class="info">
-                <p class="label">App Status:</p>
+                <p class="label">My App Status:</p>
                 <p class="value">✅ Server is running!</p>
             </div>
             <div class="info db">
