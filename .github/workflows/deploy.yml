@@ -13,7 +13,31 @@ jobs:
     strategy:
       matrix:
         python-version: [ '3.12' ]
-        
+    
+    services:
+          mysql:
+            image: mysql:8.0
+            env:
+              MYSQL_ROOT_PASSWORD: root
+              MYSQL_DATABASE: app_test
+              MYSQL_USER: appuser
+              MYSQL_PASSWORD: apppass
+            ports:
+              - 3306:3306
+            options: >-
+              --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -proot || exit 1"
+              --health-interval=5s
+              --health-timeout=2s
+              --health-retries=20                       
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_NAME: app_test
+      DB_USER: appuser
+      DB_PASSWORD: apppass
+      FLASK_ENV: testing
+      FLASK_SECRET_KEY: "ci-dummy-key"
+    
     steps:
     - name: Checkout the repository
       uses: actions/checkout@v4
@@ -28,12 +52,37 @@ jobs:
         if [ -f requirements.txt ]; then 
           pip install -r requirements.txt;
         fi
+    
+    - name: Wait for MySQL to be ready
+      run: |
+        ready=0
+            for i in {1..60}; do
+              if mysqladmin ping -h 127.0.0.1 -u root -proot >/dev/null 2>&1; then
+                ready=1; break
+              fi
+              echo "Waiting for MySQL... ($i/60)"; sleep 2
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "MySQL did not become ready in time"; exit 1
+            fi
+            mysql -h 127.0.0.1 -u root -proot -e "SELECT VERSION();"
+
 
     - name: Start application server
       run: |
-        gunicorn app:app --bind 0.0.0.0:5000 --daemon 
-        sleep 5
-        
+        gunicorn app:app --bind 0.0.0.0:5000 --daemon
+            # Wait until the app is actually listening
+            ready=0
+            for i in {1..30}; do
+              if nc -z 127.0.0.1 5000; then
+                ready=1; break
+              fi
+              echo "Waiting for app on 5000... ($i/30)"; sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "App did not start listening on port 5000 in time"; exit 1
+            fi
+            
     - name: Test the app
       run: | 
         curl -f http://0.0.0.0:5000/ || exit 1
