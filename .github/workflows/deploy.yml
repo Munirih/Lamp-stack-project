@@ -1,0 +1,179 @@
+name: Test, Build docker image, push to Dockerhub and deploy to EC2
+
+env:
+  IMAGE_NAME: munirihzowe/lamp-stack
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  test-app:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ '3.12' ]
+    
+    services:
+          mysql:
+            image: mysql:8.0
+            env:
+              MYSQL_ROOT_PASSWORD: root
+              MYSQL_DATABASE: app_test
+              MYSQL_USER: appuser
+              MYSQL_PASSWORD: apppass
+            ports:
+              - 3306:3306
+            options: >-
+              --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -proot || exit 1"
+              --health-interval=5s
+              --health-timeout=2s
+              --health-retries=20                       
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_NAME: app_test
+      DB_USER: appuser
+      DB_PASSWORD: apppass
+      FLASK_ENV: testing
+      FLASK_SECRET_KEY: "ci-dummy-key"
+    
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@v6
+
+    - name: Set up python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: | 
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt;
+        fi
+    
+    - name: Wait for MySQL to be ready
+      run: |
+        ready=0
+            for i in {1..60}; do
+              if mysqladmin ping -h 127.0.0.1 -u root -proot >/dev/null 2>&1; then
+                ready=1; break
+              fi
+              echo "Waiting for MySQL... ($i/60)"; sleep 2
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "MySQL did not become ready in time"; exit 1
+            fi
+            mysql -h 127.0.0.1 -u root -proot -e "SELECT VERSION();"
+
+
+    - name: Start application server
+      run: |
+        gunicorn app:app --bind 0.0.0.0:5000 --daemon
+            # Wait until the app is actually listening
+            ready=0
+            for i in {1..30}; do
+              if nc -z 127.0.0.1 5000; then
+                ready=1; break
+              fi
+              echo "Waiting for app on 5000... ($i/30)"; sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "App did not start listening on port 5000 in time"; exit 1
+            fi
+            
+    - name: Test the app
+      run: | 
+        curl -f http://0.0.0.0:5000/ || exit 1
+        curl -f http://0.0.0.0:5000/health || exit 1
+        echo "Health check passed! Proceed with building Docker image..."
+    
+  build-docker-image:
+    needs: test-app
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ SECRETS.DOCKERHUB_USERNAME }}
+          password: ${{ SECRETS.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME}}:latest
+      - name: Test Docker image
+        run: |
+          docker run -d --name test-container -p 5000:5000 ${{ env.IMAGE_NAME }}:latest
+          sleep 5
+          docker ps | grep test-container
+          docker logs test-container
+          docker stop test-container
+
+  deploy:
+    needs: build-docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Get DB-server private IP address by Tag
+        run: |
+          EC2_DB_SERVER=$(aws ec2 describe-instances \
+          --region ${{ secrets.AWS_REGION }} \
+          --filters "Name=tag:Name,Values=db-server" "Name=instance-state-name,Values=running" \
+          --query "Reservations[0].Instances[0].PrivateIpAddress" \
+          --output text)
+          echo "EC2_DB_SERVER=$EC2_DB_SERVER" >> $GITHUB_ENV
+          
+      - name: Get Webserver public IP address by Tag
+        run: |
+          EC2_WEBSERVER=$(aws ec2 describe-instances \
+          --region ${{ secrets.AWS_REGION }} \
+          --filters "Name=tag:Name,Values=webserver" "Name=instance-state-name,Values=running" \
+          --query "Reservations[0].Instances[0].PublicIpAddress" \
+          --output text)
+          echo "EC2_WEBSERVER=$EC2_WEBSERVER" >> $GITHUB_ENV
+          
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh 
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/my_aws_key.pem
+          chmod 600 ~/.ssh/my_aws_key.pem 
+          echo "StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "UserKnownHostsFile /dev/null" >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+     
+      - name: Deploy to webserver
+        run: |
+          ssh -T -i ~/.ssh/my_aws_key.pem -o "StrictHostKeyChecking=no" ${{ vars.EC2_USER }}@$EC2_WEBSERVER << EOF
+            docker pull ${{ env.IMAGE_NAME }}:latest
+            docker stop lamp-app || true
+            docker rm lamp-app || true
+            docker run -d --name lamp-app -p 5000:5000 --restart unless-stopped -e DB_HOST=$EC2_DB_SERVER -e DB_PORT=3306 -e DB_NAME=${{ secrets.DB_NAME}} -e DB_USER=${{ secrets.DB_USER }} -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} -e FLASK_ENV=production ${{ env.IMAGE_NAME }}:latest
+          EOF
+
+      - name: Health check webserver
+        run: |
+          sleep 20
+          HOST=$(echo "$EC2_WEBSERVER" | tr -d '[:space:]')
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${HOST}/health)
+          if [ "$STATUS" != 200 ]; then
+            echo "Server 1 health check failed. Status: $STATUS"
+            exit 1
+          fi
+          echo "Server 1 is healthy. Status: $STATUS"
+  
