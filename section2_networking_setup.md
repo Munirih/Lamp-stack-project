@@ -15,6 +15,8 @@ The infrastructure consists of:
 
 This design follows AWS best practices by ensuring that only the web server is publicly accessible while the database remains private.
 
+## Step 1: Create a VPC
+
 From the AWS Console, search for **VPC**.
 
 Select **Create VPC**.
@@ -30,7 +32,11 @@ Choose **VPC only** and configure:
 
 Click **Create VPC**.
 
-## Step 2: Create Public Subnets
+## Step 2: Create an Internet Gateway
+
+Create an Internet Gateway named **python-webapp-igw** and attach it to your VPC.
+
+## Step 3: Create Subnets
 
 Create two public subnets.
 
@@ -39,53 +45,32 @@ Create two public subnets.
  | public-subnet-1  | First AZ   | 10.0.1.0/24|
  | public-subnet-2  | Second AZ  | 10.0.3.0/24|
 
-## Step 3: Create Private Subnets
+ Enable **Auto-assign public IPv4 address** on both public subnets.
+
+Create Private Subnets
 
   |Name              | AZ        |  CIDR|
   |------------------ |-----------| -------------|
   |private-subnet-1  | First AZ   | 10.0.2.0/24|
  | private-subnet-2  | Second AZ  | 10.0.4.0/24|
 
-## Step 4: Create an Internet Gateway
 
-Create an Internet Gateway named **python-webapp-igw** and attach it to
-your VPC.
-
-## Step 5: Allocate an Elastic IP
-
-Allocate an Elastic IP for the NAT Gateway.
-
-## Step 6: Create a NAT Gateway
-
-Create a NAT Gateway named **python-webapp-nat** in **public-subnet-1**
-and associate the Elastic IP.
-
-> The NAT Gateway allows resources in private subnets to access the
-> internet without becoming publicly accessible.
-
-## Step 7: Create Route Tables
+## Step 4: Create Route Tables
 
 ### Public Route Table
 
-Associate with both public subnets and add:
+Associate with both public subnets and Add a route:
 
-  Destination   Target
-  ------------- ------------------
-  0.0.0.0/0     Internet Gateway
+  |Destination   |Target|
+  |------------- |------------------|
+ | 0.0.0.0/0  |   Internet Gateway|
 
 ### Private Route Table
 
-Associate with both private subnets and add:
+Associate with both private subnets to the private route table.
 
-  Destination   Target
-  ------------- -------------
-  0.0.0.0/0     NAT Gateway
 
-## Step 8: Enable Auto-Assign Public IP
-
-Enable **Auto-assign public IPv4 address** on both public subnets.
-
-## Step 9: Create Security Groups
+## Step 5: Create Security Groups
 
 ### Web Server Security Group
 
